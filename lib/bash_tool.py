@@ -22,6 +22,8 @@ LIST_OF_AUTO_EXECUTE_COMMANDS = [
     "which", "whereis", "file", "stat", "basename", "dirname",
     "echo", "cat", "head", "tail", "wc",
     "tree", "find",
+    "ls", "cd", 
+    "wget",
 ]
 
 
