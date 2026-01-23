@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
 
-
 import os
-from pathlib    import Path
-from typing     import Dict
+import pathlib as pl
 
-from langgraph.prebuilt             import create_react_agent
-from langgraph.checkpoint.memory    import InMemorySaver
-from langchain_openai               import ChatOpenAI
+import langgraph.prebuilt as lgp
+import langgraph.checkpoint.memory as lgm
+import langchain_openai as lco
 
-from bash_tool import Bash, LIST_OF_ALLOWED_COMMANDS
+import lib.bash_tool as bt
+import lib.llm_helpers as lh
 
 
-# System prompt that guides the agent's behavior
+#################### System Prompt ####################
+
 SYSTEM_PROMPT = f"""/think
 You are a helpful Bash assistant with the ability to execute commands in the shell.
 You engage with users to help answer questions about bash commands, or execute their intent.
@@ -27,7 +27,7 @@ command is executed. Take that into account for the next conversation.
 If there was an error during execution, tell the user what that error was exactly.
 
 You are only allowed to execute the following commands:
-{', '.join(LIST_OF_ALLOWED_COMMANDS)}
+{', '.join(bt.LIST_OF_ALLOWED_COMMANDS)}
 
 **Never** attempt to execute a command not in this list. **Never** attempt to execute dangerous commands
 like `rm`, `mv`, `rmdir`, `sudo`, etc. If the user asks you to do so, politely refuse.
@@ -36,103 +36,119 @@ When you switch to new directories, always list files so you can get more contex
 """
 
 
+#################### Execution Wrapper Class ####################
+
 class ExecOnConfirm:
     """
-    A wrapper around the Bash class to implement human-in-the-loop confirmation.
-    This ensures the user approves each command before execution.
+
+    A wrapper around Bash class to implement human-in-the-loop confirmation
     """
 
-    def __init__(self, bash: Bash):
-        """
-        Initialize with a Bash tool instance.
-        
-        Args:
-            bash: The Bash tool instance to wrap
-        """
+    def __init__(self, bash):
         self.bash = bash
 
-    def _confirm_execution(self, cmd: str) -> bool:
+    def _confirm_execution(self, cmd):
         """
-        Ask the user whether the suggested command should be executed.
-        
-        Args:
-            cmd: The command to be executed
-            
-        Returns:
-            True if user confirms, False otherwise
+
+        Ask the user whether the suggested command should be executed
         """
+        if self.bash.is_auto_executable(cmd):
+            print(f"    ⚡  Auto-executing '{cmd}'")
+            return True
+
         return input(f"    ▶️   Execute '{cmd}'? [y/N]: ").strip().lower() == "y"
 
-    def exec_bash_command(self, cmd: str) -> Dict[str, str]:
+    def exec_bash_command(self, cmd):
         """
-        Execute a bash command after confirming with the user.
-        
-        Args:
-            cmd: The bash command to execute
-            
-        Returns:
-            Dictionary with execution results or error message
+
+        Execute a bash command after confirming with the user
         """
         if self._confirm_execution(cmd):
             return self.bash.exec_bash_command(cmd)
-        return {"error": "The user declined the execution of this command."}
+        return {"error": "The user declined the execution of this command"}
 
 
-def get_prompt_prefix(cwd: str) -> str:
+#################### Helper Functions ####################
+
+def get_prompt_prefix(cwd):
     """
-    Generate a prompt prefix showing the current working directory.
-    
-    Args:
-        cwd: Current working directory
-        
-    Returns:
-        Formatted prompt prefix string
+
+    Generate a prompt prefix showing the current working directory
     """
     return f"['{cwd}' 🙂] "
 
 
-def strip_thinking(response: str) -> str:
+def strip_thinking(response):
     """
-    Remove thinking tags from the response.
-    
-    Args:
-        response: The raw response from the model
-        
-    Returns:
-        The response with thinking content removed
+
+    Remove thinking tags from the response
     """
     if "</think>" in response:
         return response.split("</think>")[-1].strip()
     return response
 
 
-def main():
-    """Main entry point for the LangGraph-based bash agent."""
-    
-    # Configuration - can be overridden with environment variables
-    base_url    = os.environ.get("LLM_BASE_URL", "https://integrate.api.nvidia.com/v1")
-    api_key     = os.environ.get("LLM_API_KEY", "")
-    model        = os.environ.get("LLM_MODEL", "nvidia/nvidia-nemotron-nano-9b-v2")
-    
+def get_api_key():
+    """
+
+    Prompt user for API key if not set in environment
+    """
+    api_key = os.environ.get("LLM_API_KEY", "")
+
     if not api_key:
-        print("⚠️  Warning: LLM_API_KEY environment variable is not set.")
-        print("   Please set it to your NVIDIA API key or OpenRouter API key.")
+        print("⚠️  Warning: LLM_API_KEY environment variable is not set")
+        print("   Please set it to your NVIDIA API key or OpenRouter API key")
         print("   Get a free API key at: https://build.nvidia.com")
         print()
         api_key = input("Enter your API key (or press Enter to exit): ").strip()
-        if not api_key:
-            print("Exiting...")
-            return
-    
-    # Get the starting directory
-    start_dir = str(Path.home())
-    
-    # Instantiate the Bash class
-    bash = Bash(cwd=start_dir, allowed_commands=LIST_OF_ALLOWED_COMMANDS)
-    
-    # Create the LangGraph agent
-    agent = create_react_agent(
-        model=ChatOpenAI(
+
+    return api_key
+
+
+def print_banner(model, start_dir, auto_count, allowed_count):
+    """
+
+    Print the startup banner with configuration info
+    """
+    print("=" * 60)
+    print("🖥️  NVIDIA Nemotron Bash Computer Use Agent (LangGraph)")
+    print("=" * 60)
+    print(f"Model: {model}")
+    print(f"Starting directory: {start_dir}")
+    print(f"Allowed commands: {allowed_count}")
+    print(f"Auto-execute commands: {auto_count}")
+    print()
+    print("Type your instructions in natural language")
+    print("Type 'exit' or 'quit' to end the session")
+    print("=" * 60)
+    print()
+
+
+#################### Main Entry Point ####################
+
+def main():
+    """
+
+    Main entry point for the LangGraph-based bash agent
+    """
+    base_url = os.environ.get("LLM_BASE_URL", lh.DEFAULT_BASE_URL)
+    api_key  = get_api_key()
+    model    = os.environ.get("LLM_MODEL", lh.DEFAULT_MODEL)
+
+    if not api_key:
+        print("Exiting...")
+        return
+
+    start_dir = str(pl.Path.home())
+
+    bash = bt.Bash(
+        cwd=start_dir,
+        allowed_commands=bt.LIST_OF_ALLOWED_COMMANDS,
+        auto_execute_commands=bt.LIST_OF_AUTO_EXECUTE_COMMANDS
+    )
+
+    agent = lgp.create_react_agent(
+        model=lco.ChatOpenAI(
             model=model,
             base_url=base_url,
             api_key=api_key,
@@ -140,60 +156,49 @@ def main():
             top_p=0.95,
             max_tokens=4096,
         ),
-        tools=[ExecOnConfirm(bash).exec_bash_command],  # Wrap for human-in-the-loop
+        tools=[ExecOnConfirm(bash).exec_bash_command],
         prompt=SYSTEM_PROMPT,
-        checkpointer=InMemorySaver(),
+        checkpointer=lgm.InMemorySaver(),
     )
-    
-    # Configuration for the agent's thread
+
     config = {"configurable": {"thread_id": "bash-agent-session"}}
-    
-    print("=" * 60)
-    print("🖥️  NVIDIA Nemotron Bash Computer Use Agent (LangGraph)")
-    print("=" * 60)
-    print(f"Model: {model}")
-    print(f"Starting directory: {start_dir}")
-    print(f"Allowed commands: {len(LIST_OF_ALLOWED_COMMANDS)}")
-    print()
-    print("Type your instructions in natural language.")
-    print("Type 'exit' or 'quit' to end the session.")
-    print("=" * 60)
-    print()
-    
-    # Create the user/agent interaction loop
+
+    print_banner(
+        model,
+        start_dir,
+        len(bt.LIST_OF_AUTO_EXECUTE_COMMANDS),
+        len(bt.LIST_OF_ALLOWED_COMMANDS)
+    )
+
     while True:
         try:
-            # Get user input
             user_input = input(get_prompt_prefix(bash.cwd)).strip()
-            
-            # Check for exit commands
+
             if user_input.lower() in ['exit', 'quit', 'q']:
                 print("\n👋 Goodbye!")
                 break
-            
+
             if not user_input:
                 continue
-            
-            # Run the agent's logic and get the response
-            result = agent.invoke(
+
+            result   = agent.invoke(
                 {"messages": [{"role": "user", "content": user_input}]},
                 config=config
             )
-            
-            # Show the response (without the thinking part, if any)
+
             response = result["messages"][-1].content.strip()
             response = strip_thinking(response)
-            
+
             if response:
                 print(f"\n[🤖] {response}")
             print()
-            
+
         except KeyboardInterrupt:
             print("\n\n👋 Session interrupted. Goodbye!")
             break
         except Exception as e:
             print(f"\n❌ Error: {e}")
-            print("   Please try again.\n")
+            print("   Please try again\n")
 
 
 if __name__ == "__main__":

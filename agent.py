@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 
 import os
-import json
-from pathlib import Path
+import json as js
+import pathlib as pl
 
-from bash_tool import Bash, LIST_OF_ALLOWED_COMMANDS
-from llm_helpers import Messages, LLM
+import lib.bash_tool as bt
+import lib.llm_helpers as lh
 
 
-# System prompt that guides the agent's behavior
+#################### System Prompt ####################
+
+
 SYSTEM_PROMPT = f"""/think
 You are a helpful Bash assistant with the ability to execute commands in the shell.
 You engage with users to help answer questions about bash commands, or execute their intent.
@@ -23,7 +25,7 @@ command is executed. Take that into account for the next conversation.
 If there was an error during execution, tell the user what that error was exactly.
 
 You are only allowed to execute the following commands:
-{', '.join(LIST_OF_ALLOWED_COMMANDS)}
+{', '.join(bt.LIST_OF_ALLOWED_COMMANDS)}
 
 **Never** attempt to execute a command not in this list. **Never** attempt to execute dangerous commands
 like `rm`, `mv`, `rmdir`, `sudo`, etc. If the user asks you to do so, politely refuse.
@@ -32,130 +34,151 @@ When you switch to new directories, always list files so you can get more contex
 """
 
 
-def confirm_execution(cmd: str) -> bool:
+#################### Helper Functions ####################
+
+
+def confirm_execution(cmd, is_auto):
     """
-    Ask the user whether the suggested command should be executed.
-    
-    Args:
-        cmd: The command to be executed
-        
-    Returns:
-        True if user confirms, False otherwise
+
+    Ask the user whether the suggested command should be executed
     """
+    if is_auto:
+        print(f"    ⚡  Auto-executing '{cmd}'")
+        return True
+
     response = input(f"    ▶️   Execute '{cmd}'? [y/N]: ").strip().lower()
     return response == "y"
 
 
-def get_prompt_prefix(cwd: str) -> str:
+def get_prompt_prefix(cwd):
     """
-    Generate a prompt prefix showing the current working directory.
-    
-    Args:
-        cwd: Current working directory
-        
-    Returns:
-        Formatted prompt prefix string
+
+    Generate a prompt prefix showing the current working directory
     """
     return f"['{cwd}' 🙂] "
 
 
-def main():
-    """Main entry point for the bash agent."""
-    
-    # Configuration - can be overridden with environment variables
-    base_url    = os.environ.get("LLM_BASE_URL", "https://integrate.api.nvidia.com/v1")
-    api_key     = os.environ.get("LLM_API_KEY", "")
-    model       = os.environ.get("LLM_MODEL", "nvidia/nvidia-nemotron-nano-9b-v2")
-    
+def get_api_key():
+    """
+
+    Prompt user for API key if not set in environment
+    """
+    api_key = os.environ.get("LLM_API_KEY", "")
+
     if not api_key:
-        print("⚠️  Warning: LLM_API_KEY environment variable is not set.")
-        print("   Please set it to your NVIDIA API key or OpenRouter API key.")
+        print("⚠️  Warning: LLM_API_KEY environment variable is not set")
+        print("   Please set it to your NVIDIA API key or OpenRouter API key")
         print("   Get a free API key at: https://build.nvidia.com")
         print()
         api_key = input("Enter your API key (or press Enter to exit): ").strip()
-        if not api_key:
-            print("Exiting...")
-            return
-    
-    # Get the starting directory
-    start_dir = str(Path.home())
-    
-    # Initialize components
-    bash        = Bash(cwd=start_dir, allowed_commands=LIST_OF_ALLOWED_COMMANDS)
-    llm         = LLM(base_url=base_url, api_key=api_key, model=model)
-    messages    = Messages(SYSTEM_PROMPT)
-    
+
+    return api_key
+
+
+def print_banner(model, start_dir, auto_count, allowed_count):
+    """
+
+    Print the startup banner with configuration info
+    """
     print("=" * 60)
     print("🖥️  NVIDIA Nemotron Bash Computer Use Agent")
     print("=" * 60)
     print(f"Model: {model}")
     print(f"Starting directory: {start_dir}")
-    print(f"Allowed commands: {len(LIST_OF_ALLOWED_COMMANDS)}")
+    print(f"Allowed commands: {allowed_count}")
+    print(f"Auto-execute commands: {auto_count}")
     print()
-    print("Type your instructions in natural language.")
-    print("Type 'exit' or 'quit' to end the session.")
+    print("Type your instructions in natural language")
+    print("Type 'exit' or 'quit' to end the session")
     print("=" * 60)
     print()
-    
-    # The main agent loop
+
+
+#################### Main Entry Point ####################
+
+def main():
+    """
+
+    Main entry point for the bash agent
+    """
+    base_url = os.environ.get("LLM_BASE_URL", lh.DEFAULT_BASE_URL)
+    api_key  = get_api_key()
+    model    = os.environ.get("LLM_MODEL", lh.DEFAULT_MODEL)
+
+    if not api_key:
+        print("Exiting...")
+        return
+
+    start_dir = str(pl.Path.home())
+
+    bash     = bt.Bash(
+        cwd=start_dir,
+        allowed_commands=bt.LIST_OF_ALLOWED_COMMANDS,
+        auto_execute_commands=bt.LIST_OF_AUTO_EXECUTE_COMMANDS
+    )
+    llm      = lh.LLM(base_url=base_url, api_key=api_key, model=model)
+    messages = lh.Messages(SYSTEM_PROMPT)
+
+    print_banner(
+        model,
+        start_dir,
+        len(bt.LIST_OF_AUTO_EXECUTE_COMMANDS),
+        len(bt.LIST_OF_ALLOWED_COMMANDS)
+    )
+
     while True:
         try:
-            # Get user message
             user_input = input(get_prompt_prefix(bash.cwd)).strip()
-            
-            # Check for exit commands
+
             if user_input.lower() in ['exit', 'quit', 'q']:
                 print("\n👋 Goodbye!")
                 break
-            
+
             if not user_input:
                 continue
-            
+
             messages.add_user_message(user_input)
-            
-            # The tool-call/response loop
+
             while True:
                 response, tool_calls = llm.query(messages, [bash.to_json_schema()])
-                
-                # Add the response to the context (with tool calls if any)
                 messages.add_assistant_message(response, tool_calls)
-                
-                # Process tool calls
+
                 if tool_calls:
                     for tc in tool_calls:
                         function_name = tc.function.name
+
                         try:
-                            function_args = json.loads(tc.function.arguments)
-                        except json.JSONDecodeError:
+                            function_args = js.loads(tc.function.arguments)
+                        except js.JSONDecodeError:
                             tool_call_result = {"error": "Failed to parse function arguments"}
                             messages.add_tool_message(tool_call_result, tc.id)
                             continue
-                        
-                        # Ensure it's calling the right tool
+
                         if function_name != "exec_bash_command" or "cmd" not in function_args:
                             tool_call_result = {"error": "Incorrect tool or function argument"}
                         else:
-                            cmd = function_args["cmd"]
-                            if confirm_execution(cmd):
+                            cmd     = function_args["cmd"]
+                            is_auto = bash.is_auto_executable(cmd)
+
+                            if confirm_execution(cmd, is_auto):
                                 tool_call_result = bash.exec_bash_command(cmd)
                             else:
-                                tool_call_result = {"error": "The user declined the execution of this command."}
-                        
+                                tool_call_result = {"error": "The user declined the execution of this command"}
+
                         messages.add_tool_message(tool_call_result, tc.id)
                 else:
-                    # No tool calls - display the assistant's response
                     clean_response = llm.strip_thinking(response)
                     if clean_response:
                         print(f"\n[🤖] {clean_response}")
                     print()
                     break
-                    
+
         except KeyboardInterrupt:
             print("\n\n👋 Session interrupted. Goodbye!")
             break
         except Exception as e:
             print(f"\n❌ Error: {e}")
-            print("   Please try again.\n")
+            print("   Please try again\n")
 
 
 if __name__ == "__main__":
