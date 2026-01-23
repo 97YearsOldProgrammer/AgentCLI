@@ -10,9 +10,7 @@ import lib.llm_helpers as lh
 
 #################### System Prompt ####################
 
-
-SYSTEM_PROMPT = f"""/think
-You are a helpful Bash assistant with the ability to execute commands in the shell.
+SYSTEM_PROMPT = f"""You are a helpful Bash assistant with the ability to execute commands in the shell.
 You engage with users to help answer questions about bash commands, or execute their intent.
 If user intent is unclear, keep engaging with them to figure out what they need and how to best help
 them. If they ask question that are not relevant to bash or computer use, decline to answer.
@@ -36,7 +34,6 @@ When you switch to new directories, always list files so you can get more contex
 
 #################### Helper Functions ####################
 
-
 def confirm_execution(cmd, is_auto):
     """
 
@@ -58,16 +55,47 @@ def get_prompt_prefix(cwd):
     return f"['{cwd}' 🙂] "
 
 
-def get_api_key():
+def get_backend_config():
     """
 
-    Prompt user for API key if not set in environment
+    Determine which backend to use based on environment or availability
     """
+    backend = os.environ.get("LLM_BACKEND", "auto")
+
+    if backend == "vllm" or backend == "auto":
+        try:
+            import requests as req
+            resp = req.get("http://localhost:8000/v1/models", timeout=1)
+            if resp.status_code == 200:
+                return lh.BACKENDS["vllm_local"]
+        except:
+            pass
+
+    if backend == "ollama" or backend == "auto":
+        try:
+            import requests as req
+            resp = req.get("http://localhost:11434/api/tags", timeout=1)
+            if resp.status_code == 200:
+                return lh.BACKENDS["ollama_local"]
+        except:
+            pass
+
+    return lh.BACKENDS["nvidia_cloud"]
+
+
+def get_api_key(backend_config):
+    """
+
+    Get API key - only needed for cloud backend
+    """
+    if backend_config["api_key"]:
+        return backend_config["api_key"]
+
     api_key = os.environ.get("LLM_API_KEY", "")
 
     if not api_key:
         print("⚠️  Warning: LLM_API_KEY environment variable is not set")
-        print("   Please set it to your NVIDIA API key or OpenRouter API key")
+        print("   Please set it to your NVIDIA API key")
         print("   Get a free API key at: https://build.nvidia.com")
         print()
         api_key = input("Enter your API key (or press Enter to exit): ").strip()
@@ -75,18 +103,21 @@ def get_api_key():
     return api_key
 
 
-def print_banner(model, start_dir, auto_count, allowed_count):
+def print_banner(model, base_url, start_dir, auto_count, allowed_count):
     """
 
     Print the startup banner with configuration info
     """
+    is_local = "localhost" in base_url
+
     print("=" * 60)
-    print("🖥️  NVIDIA Nemotron Bash Computer Use Agent")
+    print("🖥️  Bash Computer Use Agent")
     print("=" * 60)
+    print(f"Backend: {'LOCAL GPU' if is_local else 'NVIDIA Cloud'}")
     print(f"Model: {model}")
+    print(f"Endpoint: {base_url}")
     print(f"Starting directory: {start_dir}")
-    print(f"Allowed commands: {allowed_count}")
-    print(f"Auto-execute commands: {auto_count}")
+    print(f"Auto-execute commands: {auto_count}/{allowed_count}")
     print()
     print("Type your instructions in natural language")
     print("Type 'exit' or 'quit' to end the session")
@@ -101,9 +132,10 @@ def main():
 
     Main entry point for the bash agent
     """
-    base_url = os.environ.get("LLM_BASE_URL", lh.DEFAULT_BASE_URL)
-    api_key  = get_api_key()
-    model    = os.environ.get("LLM_MODEL", lh.DEFAULT_MODEL)
+    backend  = get_backend_config()
+    base_url = os.environ.get("LLM_BASE_URL", backend["base_url"])
+    model    = os.environ.get("LLM_MODEL", backend["model"])
+    api_key  = get_api_key(backend)
 
     if not api_key:
         print("Exiting...")
@@ -121,6 +153,7 @@ def main():
 
     print_banner(
         model,
+        base_url,
         start_dir,
         len(bt.LIST_OF_AUTO_EXECUTE_COMMANDS),
         len(bt.LIST_OF_ALLOWED_COMMANDS)

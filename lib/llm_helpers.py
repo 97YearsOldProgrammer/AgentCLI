@@ -4,8 +4,29 @@ import openai as oai
 
 #################### Default Model Configuration ####################
 
-DEFAULT_BASE_URL = "https://integrate.api.nvidia.com/v1"
-DEFAULT_MODEL    = "nvidia/llama-3.1-nemotron-70b-instruct"
+DEFAULT_BASE_URL = "http://localhost:8000/v1"
+DEFAULT_MODEL    = "nvidia/Llama-3.1-Nemotron-Nano-8B-v1"
+
+
+#################### Inference Backend Options ####################
+
+BACKENDS = {
+    "vllm_local": {
+        "base_url": "http://localhost:8000/v1",
+        "model":    "nvidia/Llama-3.1-Nemotron-Nano-8B-v1",
+        "api_key":  "not-needed",
+    },
+    "ollama_local": {
+        "base_url": "http://localhost:11434/v1",
+        "model":    "nemotron-mini",
+        "api_key":  "ollama",
+    },
+    "nvidia_cloud": {
+        "base_url": "https://integrate.api.nvidia.com/v1",
+        "model":    "nvidia/nvidia-nemotron-nano-9b-v2",
+        "api_key":  None,  # Requires env var
+    },
+}
 
 
 #################### Messages Class ####################
